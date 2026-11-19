@@ -148,6 +148,31 @@ class ChatCmplHelpers:
         return annotations
 
     @classmethod
+    def content_filter_refusal(cls, finish_reason: str | None) -> str | None:
+        """Return refusal text when a finish reason reports a content-filter block.
+
+        Besides the standard ``"content_filter"`` value, some OpenAI-compatible providers
+        append their own block reason, such as Gemini's ``"content_filter: SAFETY"``. That
+        reason is kept in the refusal text because the raw finish reason is not otherwise
+        exposed to callers.
+
+        Args:
+            finish_reason: The finish reason reported for the choice.
+
+        Returns:
+            The refusal text, or None when the finish reason is not a content-filter block.
+        """
+        if finish_reason is None:
+            return None
+        prefix, separator, reason = finish_reason.partition(":")
+        if prefix != "content_filter":
+            return None
+        reason = reason.strip()
+        if separator and reason:
+            return f"Response withheld by the provider's content filter ({reason})."
+        return "Response withheld by the provider's content filter."
+
+    @classmethod
     def clean_gemini_tool_call_id(cls, tool_call_id: str, model: str | None = None) -> str:
         """Clean up litellm's __thought__ suffix from Gemini tool call IDs.
 
