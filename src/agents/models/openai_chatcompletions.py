@@ -333,18 +333,21 @@ class OpenAIChatCompletionsModel(Model):
                 "output_tokens_details": usage.output_tokens_details.model_dump(),
             }
 
-            # Some providers signal a filtered non-streaming completion only through
-            # finish_reason="content_filter" and an otherwise empty message. Preserve
+            # Some providers signal a filtered non-streaming completion only through a
+            # content-filter finish_reason and an empty or missing message. Preserve
             # that terminal signal as a refusal instead of returning an empty output.
-            if (
-                message is not None
-                and first_choice is not None
-                and first_choice.finish_reason == "content_filter"
-                and not message.content
-                and not message.refusal
-                and not message.tool_calls
-            ):
-                message.refusal = "Response withheld by the provider's content filter."
+            content_filter_refusal = (
+                ChatCmplHelpers.content_filter_refusal(first_choice.finish_reason)
+                if first_choice is not None
+                else None
+            )
+            if content_filter_refusal is not None:
+                if message is None:
+                    message = ChatCompletionMessage(
+                        role="assistant", refusal=content_filter_refusal
+                    )
+                elif not message.content and not message.refusal and not message.tool_calls:
+                    message.refusal = content_filter_refusal
 
             # A completion truncated before any visible token (finish_reason="length")
             # is a token- or reasoning-budget exhaustion, not a policy refusal.

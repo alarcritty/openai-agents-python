@@ -56,7 +56,7 @@ from agents import (
     trace,
 )
 from agents.decorators import tool
-from agents.exceptions import ModelBehaviorError, UserError
+from agents.exceptions import ModelBehaviorError, ModelRefusalError, UserError
 from agents.models._retry_runtime import provider_managed_retries_disabled
 from agents.models.chatcmpl_helpers import HEADERS_OVERRIDE, ChatCmplHelpers
 from agents.models.fake_id import FAKE_RESPONSES_ID
@@ -597,6 +597,72 @@ async def test_get_response_surfaces_empty_content_filter_as_refusal(monkeypatch
     assert (
         resp.output[0].content[0].refusal == "Response withheld by the provider's content filter."
     )
+
+
+def _gemini_blocked_chat_completion(finish_reason: str) -> ChatCompletion:
+    # This mirrors the OpenAI client's unvalidated parsing of the blocked response from
+    # Gemini's OpenAI-compatible endpoint: the choice has no message, and the finish reason
+    # may carry a block reason that is not a valid Chat Completions finish reason.
+    return ChatCompletion.construct(
+        id="resp-id",
+        created=0,
+        model="fake",
+        object="chat.completion",
+        choices=[{"finish_reason": finish_reason, "index": 0}],
+        usage={"completion_tokens": 0, "prompt_tokens": 14, "total_tokens": 14},
+    )
+
+
+@pytest.mark.allow_call_model_methods
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("finish_reason", "expected_refusal"),
+    [
+        ("content_filter", "Response withheld by the provider's content filter."),
+        ("content_filter: OTHER", "Response withheld by the provider's content filter (OTHER)."),
+    ],
+)
+async def test_get_response_surfaces_content_filter_without_message_as_refusal(
+    monkeypatch, finish_reason: str, expected_refusal: str
+) -> None:
+    async def patched_fetch_response(self, *args, **kwargs):
+        return _gemini_blocked_chat_completion(finish_reason)
+
+    monkeypatch.setattr(OpenAIChatCompletionsModel, "_fetch_response", patched_fetch_response)
+    model = OpenAIProvider(use_responses=False).get_model("gpt-4")
+    resp = await model.get_response(
+        system_instructions=None,
+        input="",
+        model_settings=ModelSettings(),
+        tools=[],
+        output_schema=None,
+        handoffs=[],
+        tracing=ModelTracing.DISABLED,
+        previous_response_id=None,
+        conversation_id=None,
+        prompt=None,
+    )
+
+    assert len(resp.output) == 1
+    assert isinstance(resp.output[0], ResponseOutputMessage)
+    assert len(resp.output[0].content) == 1
+    assert isinstance(resp.output[0].content[0], ResponseOutputRefusal)
+    assert resp.output[0].content[0].refusal == expected_refusal
+    assert resp.usage.requests == 1
+    assert resp.usage.input_tokens == 14
+
+
+@pytest.mark.allow_call_model_methods
+@pytest.mark.asyncio
+async def test_run_raises_model_refusal_for_gemini_content_filter_block(monkeypatch) -> None:
+    async def patched_fetch_response(self, *args, **kwargs):
+        return _gemini_blocked_chat_completion("content_filter: OTHER")
+
+    monkeypatch.setattr(OpenAIChatCompletionsModel, "_fetch_response", patched_fetch_response)
+    agent = Agent(name="test", model=OpenAIProvider(use_responses=False).get_model("gpt-4"))
+
+    with pytest.raises(ModelRefusalError, match=r"content filter \(OTHER\)"):
+        await Runner.run(agent, "hi")
 
 
 @pytest.mark.allow_call_model_methods
@@ -1407,7 +1473,7 @@ def test_get_client_disables_provider_managed_retries_on_runner_retry() -> None:
 async def test_get_response_with_no_message(monkeypatch) -> None:
     """If the model returns no message, get_response should return an empty output."""
     msg = ChatCompletionMessage(role="assistant", content="ignored")
-    choice = Choice(index=0, finish_reason="content_filter", message=msg)
+    choice = Choice(index=0, finish_reason="stop", message=msg)
     choice.message = None  # type: ignore[assignment]
     chat = ChatCompletion(
         id="resp-id",
