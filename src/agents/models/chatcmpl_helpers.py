@@ -151,16 +151,9 @@ class ChatCmplHelpers:
     def content_filter_refusal(cls, finish_reason: str | None) -> str | None:
         """Return refusal text when a finish reason reports a content-filter block.
 
-        Besides the standard ``"content_filter"`` value, some OpenAI-compatible providers
-        append their own block reason, such as Gemini's ``"content_filter: SAFETY"``. That
-        reason is kept in the refusal text because the raw finish reason is not otherwise
-        exposed to callers.
-
-        Args:
-            finish_reason: The finish reason reported for the choice.
-
-        Returns:
-            The refusal text, or None when the finish reason is not a content-filter block.
+        Some OpenAI-compatible providers append a block reason, such as Gemini's
+        ``"content_filter: SAFETY"``. The reason is kept in the refusal text because the raw
+        finish reason is not otherwise exposed to callers.
         """
         if finish_reason is None:
             return None
