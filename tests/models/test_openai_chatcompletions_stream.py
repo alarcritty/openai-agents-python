@@ -3678,6 +3678,42 @@ async def test_buffered_stream_synthesizes_refusal_on_content_filter(monkeypatch
 
 @pytest.mark.allow_call_model_methods
 @pytest.mark.asyncio
+async def test_buffered_stream_synthesizes_refusal_on_content_filter_with_reason(
+    monkeypatch,
+) -> None:
+    """A terminal chunk shaped like a block from Gemini's OpenAI-compatible endpoint, with
+    no delta and a block reason appended to the finish reason, must still synthesize a
+    refusal that keeps the provider's reason."""
+    # The OpenAI client parses stream chunks without validation, so the missing delta and
+    # the nonstandard finish reason reach the handler as-is.
+    chunk = ChatCompletionChunk.construct(
+        id="chunk-id",
+        created=1,
+        model="fake",
+        object="chat.completion.chunk",
+        choices=[{"finish_reason": "content_filter: SAFETY", "index": 0}],
+    )
+
+    output_events = await _buffered_stream_events(monkeypatch, [chunk])
+
+    refusal_deltas = [e for e in output_events if e.type == "response.refusal.delta"]
+    assert [e.delta for e in refusal_deltas] == [
+        "Response withheld by the provider's content filter (SAFETY)."
+    ]
+
+    completed_event = output_events[-1]
+    assert isinstance(completed_event, ResponseCompletedEvent)
+    assert len(completed_event.response.output) == 1
+    assistant_msg = completed_event.response.output[0]
+    assert isinstance(assistant_msg, ResponseOutputMessage)
+    assert len(assistant_msg.content) == 1
+    refusal_part = assistant_msg.content[0]
+    assert isinstance(refusal_part, ResponseOutputRefusal)
+    assert refusal_part.refusal == "Response withheld by the provider's content filter (SAFETY)."
+
+
+@pytest.mark.allow_call_model_methods
+@pytest.mark.asyncio
 async def test_buffered_stream_content_filter_does_not_clobber_text(monkeypatch) -> None:
     """A content_filter finish_reason arriving after real text was streamed must
     not synthesize a refusal, even with buffering enabled."""

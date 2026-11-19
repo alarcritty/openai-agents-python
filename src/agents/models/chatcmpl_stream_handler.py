@@ -634,13 +634,13 @@ class ChatCmplStreamHandler:
         output_layout = _StreamOutputLayout()
         sequence_number = SequenceNumber()
         # Some providers (e.g. Anthropic on Amazon Bedrock via LiteLLM) signal a
-        # safety block only through finish_reason == "content_filter" with an
-        # empty delta and no refusal field. Track it so we can synthesize an
-        # explicit refusal after the stream if nothing else was emitted.
+        # safety block only through a content-filter finish_reason with an empty
+        # or missing delta and no refusal field. Track its refusal text so we can
+        # synthesize an explicit refusal after the stream if nothing else was emitted.
         # A completion truncated before any visible token (finish_reason ==
         # "length") has the same shape; track it too so we can surface a model
         # behavior error instead of collapsing into an empty turn.
-        saw_content_filter = False
+        content_filter_refusal: str | None = None
         saw_length = False
         saw_finish_reason = False
         async for chunk in stream:
@@ -687,8 +687,8 @@ class ChatCmplStreamHandler:
 
             if choice.finish_reason is not None:
                 saw_finish_reason = True
-            if choice.finish_reason == "content_filter":
-                saw_content_filter = True
+            if refusal_text := ChatCmplHelpers.content_filter_refusal(choice.finish_reason):
+                content_filter_refusal = refusal_text
             elif choice.finish_reason == "length":
                 saw_length = True
 
@@ -1138,7 +1138,7 @@ class ChatCmplStreamHandler:
         # empty turn. Only when nothing else was produced (text / refusal / tool
         # calls) — a content_filter that still emitted content is left as-is.
         if (
-            saw_content_filter
+            content_filter_refusal is not None
             and state.text_content_index_and_output is None
             and state.refusal_content_index_and_output is None
             and not state.function_calls
@@ -1153,7 +1153,7 @@ class ChatCmplStreamHandler:
             # the sole content part, is at content_index 0 in both the stream and
             # response.completed regardless of any reasoning item.
             refusal_index = 0
-            refusal_message = "Response withheld by the provider's content filter."
+            refusal_message = content_filter_refusal
             state.refusal_content_index_and_output = (
                 refusal_index,
                 ResponseOutputRefusal(refusal=refusal_message, type="refusal"),
